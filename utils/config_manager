@@ -1,1 +1,446 @@
+"""
+Configuration Manager for IDHE (Intelligent Database Health Ecosystem)
+====================================================================
 
+Handles system configuration, environment variables, and settings management.
+"""
+
+import os
+import json
+import logging
+from typing import Dict, Any, Optional
+from pathlib import Path
+from dataclasses import asdict
+import yaml
+from .data_models import IDHEConfig
+
+logger = logging.getLogger(__name__)
+
+class ConfigManager:
+    """Manages IDHE system configuration and settings"""
+    
+    CONFIG_FILE = "idhe_config.json"
+    YAML_CONFIG_FILE = "idhe_config.yaml"
+    ENV_PREFIX = "IDHE_"
+    
+    def __init__(self):
+        self.config_file_path = Path(self.CONFIG_FILE)
+        self.yaml_config_path = Path(self.YAML_CONFIG_FILE)
+        self.config: Optional[IDHEConfig] = None
+    
+    @classmethod
+    def load_config(cls, config_path: str = None) -> IDHEConfig:
+        """Load configuration from file and environment variables"""
+        config_manager = cls()
+        
+        # Start with default configuration
+        config = IDHEConfig()
+        
+        # Load from file if provided
+        if config_path:
+            config = config_manager._load_from_file(config_path, config)
+        else:
+            # Try to load from default locations
+            config = config_manager._load_from_default_locations(config)
+        
+        # Override with environment variables
+        config = config_manager._load_from_environment(config)
+        
+        # Validate configuration
+        config = config_manager._validate_config(config)
+        
+        logger.info("IDHE configuration loaded successfully")
+        return config
+    
+    def _load_from_file(self, config_path: str, config: IDHEConfig) -> IDHEConfig:
+        """Load configuration from specified file"""
+        try:
+            config_file = Path(config_path)
+            if not config_file.exists():
+                logger.warning(f"Config file {config_path} not found, using defaults")
+                return config
+            
+            with open(config_file, 'r') as f:
+                if config_path.endswith('.yaml') or config_path.endswith('.yml'):
+                    config_data = yaml.safe_load(f)
+                else:
+                    config_data = json.load(f)
+            
+            # Update config with file data
+            for key, value in config_data.items():
+                if hasattr(config, key):
+                    setattr(config, key, value)
+            
+            logger.info(f"Configuration loaded from {config_path}")
+            return config
+            
+        except Exception as e:
+            logger.error(f"Error loading config from {config_path}: {e}")
+            return config
+    
+    def _load_from_default_locations(self, config: IDHEConfig) -> IDHEConfig:
+        """Load from default configuration file locations"""
+        # Check current directory
+        if self.config_file_path.exists():
+            return self._load_from_file(str(self.config_file_path), config)
+        
+        if self.yaml_config_path.exists():
+            return self._load_from_file(str(self.yaml_config_path), config)
+        
+        # Check for config directory
+        config_dirs = [
+            Path("./config"),
+            Path("../config"),
+            Path("/etc/idhe"),
+            Path(os.path.expanduser("~/.idhe"))
+        ]
+        
+        for config_dir in config_dirs:
+            if config_dir.exists():
+                for config_file in config_dir.glob("idhe_config.*"):
+                    if config_file.suffix in ['.json', '.yaml', '.yml']:
+                        return self._load_from_file(str(config_file), config)
+        
+        logger.info("No config file found, using default configuration")
+        return config
+    
+    def _load_from_environment(self, config: IDHEConfig) -> IDHEConfig:
+        """Load configuration from environment variables"""
+        env_mapping = {
+            'IDHE_DATABASE_URL': 'database_url',
+            'IDHE_REDIS_URL': 'redis_url',
+            'IDHE_UPDATE_INTERVAL': 'update_interval',
+            'IDHE_RETENTION_DAYS': 'retention_days',
+            'IDHE_ENABLE_ML_OPTIMIZATION': 'enable_ml_optimization',
+            'IDHE_ENABLE_PREDICTIVE_MAINTENANCE': 'enable_predictive_maintenance',
+            'IDHE_ENABLE_SECURITY_SCANNING': 'enable_security_scanning',
+            'IDHE_PERFORMANCE_THRESHOLD': 'performance_threshold',
+            'IDHE_ANOMALY_SENSITIVITY': 'anomaly_sensitivity',
+            'IDHE_LOG_LEVEL': 'log_level',
+            'IDHE_MAX_CONCURRENT_MONITORS': 'max_concurrent_monitors',
+            'IDHE_ALERT_COOLDOWN_MINUTES': 'alert_cooldown_minutes',
+            'IDHE_SECURITY_SCAN_INTERVAL': 'security_scan_interval',
+            'IDHE_MAX_FAILED_ATTEMPTS': 'max_failed_attempts',
+            'IDHE_SQL_INJECTION_THRESHOLD': 'sql_injection_threshold',
+            'IDHE_FORECAST_HORIZON_DAYS': 'forecast_horizon_days',
+            'IDHE_CAPACITY_WARNING_THRESHOLD': 'capacity_warning_threshold',
+            'IDHE_AUTO_SCALING_ENABLED': 'auto_scaling_enabled'
+        }
+        
+        for env_var, config_attr in env_mapping.items():
+            env_value = os.getenv(env_var)
+            if env_value is not None:
+                try:
+                    # Convert string values to appropriate types
+                    if isinstance(getattr(config, config_attr), bool):
+                        value = env_value.lower() in ('true', '1', 'yes', 'on')
+                    elif isinstance(getattr(config, config_attr), int):
+                        value = int(env_value)
+                    elif isinstance(getattr(config, config_attr), float):
+                        value = float(env_value)
+                    else:
+                        value = env_value
+                    
+                    setattr(config, config_attr, value)
+                    logger.debug(f"Loaded {config_attr} from environment: {env_value}")
+                    
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid value for {env_var}: {env_value}, {e}")
+        
+        return config
+    
+    def _validate_config(self, config: IDHEConfig) -> IDHEConfig:
+        """Validate and sanitize configuration values"""
+        # Ensure positive values for thresholds and intervals
+        if config.update_interval <= 0:
+            logger.warning("Invalid update_interval, setting to default 30")
+            config.update_interval = 30
+        
+        if config.retention_days <= 0:
+            logger.warning("Invalid retention_days, setting to default 90")
+            config.retention_days = 90
+        
+        if not 0 <= config.performance_threshold <= 1:
+            logger.warning("Invalid performance_threshold, setting to default 0.8")
+            config.performance_threshold = 0.8
+        
+        if not 0 <= config.anomaly_sensitivity <= 1:
+            logger.warning("Invalid anomaly_sensitivity, setting to default 0.95")
+            config.anomaly_sensitivity = 0.95
+        
+        if not 0 <= config.capacity_warning_threshold <= 1:
+            logger.warning("Invalid capacity_warning_threshold, setting to default 0.8")
+            config.capacity_warning_threshold = 0.8
+        
+        # Ensure reasonable log level
+        valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+        if config.log_level.upper() not in valid_log_levels:
+            logger.warning(f"Invalid log level {config.log_level}, using INFO")
+            config.log_level = 'INFO'
+        
+        return config
+    
+    @classmethod
+    def save_config(cls, config: IDHEConfig, config_path: str = None) -> None:
+        """Save configuration to file"""
+        try:
+            if config_path:
+                config_file = Path(config_path)
+            else:
+                config_file = Path(cls.CONFIG_FILE)
+            
+            # Create directory if it doesn't exist
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Convert config to dictionary
+            config_dict = asdict(config)
+            
+            # Save as JSON
+            with open(config_file, 'w') as f:
+                json.dump(config_dict, f, indent=2)
+            
+            logger.info(f"Configuration saved to {config_file}")
+            
+            # Also save as YAML if possible
+            try:
+                yaml_file = config_file.with_suffix('.yaml')
+                with open(yaml_file, 'w') as f:
+                    yaml.dump(config_dict, f, default_flow_style=False, indent=2)
+                logger.info(f"Configuration also saved to {yaml_file}")
+            except Exception as e:
+                logger.warning(f"Could not save YAML config: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error saving configuration: {e}")
+            raise
+    
+    @classmethod
+    def get_database_config(cls) -> Dict[str, Any]:
+        """Get database connection configuration"""
+        database_url = os.getenv('IDHE_DATABASE_URL', 'sqlite:///idhe_health.db')
+        
+        # Parse database URL
+        if database_url.startswith('sqlite'):
+            return {
+                'type': 'sqlite',
+                'database': database_url.split('///')[-1],
+                'url': database_url
+            }
+        elif database_url.startswith('postgresql'):
+            return {
+                'type': 'postgresql',
+                'url': database_url
+            }
+        elif database_url.startswith('mysql'):
+            return {
+                'type': 'mysql',
+                'url': database_url
+            }
+        else:
+            logger.warning(f"Unknown database type in URL: {database_url}")
+            return {
+                'type': 'unknown',
+                'url': database_url
+            }
+    
+    @classmethod
+    def get_redis_config(cls) -> Dict[str, Any]:
+        """Get Redis configuration"""
+        redis_url = os.getenv('IDHE_REDIS_URL', 'redis://localhost:6379/0')
+        
+        # Parse Redis URL
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(redis_url)
+            
+            return {
+                'host': parsed.hostname or 'localhost',
+                'port': parsed.port or 6379,
+                'db': int(parsed.path.lstrip('/')) if parsed.path else 0,
+                'url': redis_url
+            }
+        except Exception as e:
+            logger.error(f"Error parsing Redis URL {redis_url}: {e}")
+            return {
+                'host': 'localhost',
+                'port': 6379,
+                'db': 0,
+                'url': redis_url
+            }
+    
+    @classmethod
+    def get_logging_config(cls) -> Dict[str, Any]:
+        """Get logging configuration"""
+        log_level = os.getenv('IDHE_LOG_LEVEL', 'INFO').upper()
+        log_file = os.getenv('IDHE_LOG_FILE', 'idhe.log')
+        log_format = os.getenv('IDHE_LOG_FORMAT', 
+                              '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        
+        return {
+            'level': log_level,
+            'file': log_file,
+            'format': log_format,
+            'max_bytes': int(os.getenv('IDHE_LOG_MAX_BYTES', '10485760')),  # 10MB
+            'backup_count': int(os.getenv('IDHE_LOG_BACKUP_COUNT', '5'))
+        }
+    
+    @classmethod
+    def get_api_config(cls) -> Dict[str, Any]:
+        """Get API configuration"""
+        return {
+            'host': os.getenv('IDHE_API_HOST', '0.0.0.0'),
+            'port': int(os.getenv('IDHE_API_PORT', '8000')),
+            'debug': os.getenv('IDHE_API_DEBUG', 'false').lower() == 'true',
+            'cors_enabled': os.getenv('IDHE_CORS_ENABLED', 'true').lower() == 'true',
+            'rate_limit': int(os.getenv('IDHE_RATE_LIMIT', '1000')),  # requests per hour
+            'max_request_size': int(os.getenv('IDHE_MAX_REQUEST_SIZE', '1048576')),  # 1MB
+            'timeout': int(os.getenv('IDHE_API_TIMEOUT', '30'))  # seconds
+        }
+    
+    @classmethod
+    def get_security_config(cls) -> Dict[str, Any]:
+        """Get security configuration"""
+        return {
+            'enable_auth': os.getenv('IDHE_ENABLE_AUTH', 'false').lower() == 'true',
+            'secret_key': os.getenv('IDHE_SECRET_KEY', 'default-secret-key-change-in-production'),
+            'jwt_expiration': int(os.getenv('IDHE_JWT_EXPIRATION', '3600')),  # 1 hour
+            'allowed_hosts': os.getenv('IDHE_ALLOWED_HOSTS', '*').split(','),
+            'enable_https': os.getenv('IDHE_ENABLE_HTTPS', 'false').lower() == 'true',
+            'ssl_cert': os.getenv('IDHE_SSL_CERT', ''),
+            'ssl_key': os.getenv('IDHE_SSL_KEY', ''),
+            'encryption_key': os.getenv('IDHE_ENCRYPTION_KEY', '')
+        }
+    
+    @classmethod
+    def get_monitoring_config(cls) -> Dict[str, Any]:
+        """Get monitoring and alerting configuration"""
+        return {
+            'enable_prometheus': os.getenv('IDHE_ENABLE_PROMETHEUS', 'false').lower() == 'true',
+            'prometheus_port': int(os.getenv('IDHE_PROMETHEUS_PORT', '9090')),
+            'enable_grafana': os.getenv('IDHE_ENABLE_GRAFANA', 'false').lower() == 'true',
+            'grafana_endpoint': os.getenv('IDHE_GRAFANA_ENDPOINT', 'http://localhost:3000'),
+            'alert_webhook': os.getenv('IDHE_ALERT_WEBHOOK', ''),
+            'email_alerts': {
+                'enabled': os.getenv('IDHE_EMAIL_ALERTS', 'false').lower() == 'true',
+                'smtp_server': os.getenv('IDHE_SMTP_SERVER', ''),
+                'smtp_port': int(os.getenv('IDHE_SMTP_PORT', '587')),
+                'username': os.getenv('IDHE_SMTP_USERNAME', ''),
+                'password': os.getenv('IDHE_SMTP_PASSWORD', ''),
+                'from_address': os.getenv('IDHE_EMAIL_FROM', ''),
+                'to_addresses': os.getenv('IDHE_EMAIL_TO', '').split(',')
+            }
+        }
+    
+    @classmethod
+    def create_sample_config(cls, output_path: str = None) -> None:
+        """Create a sample configuration file"""
+        sample_config = IDHEConfig(
+            database_url="sqlite:///idhe_health.db",
+            redis_url="redis://localhost:6379/0",
+            update_interval=30,
+            retention_days=90,
+            enable_ml_optimization=True,
+            enable_predictive_maintenance=True,
+            enable_security_scanning=True,
+            performance_threshold=0.8,
+            anomaly_sensitivity=0.95,
+            log_level="INFO",
+            max_concurrent_monitors=4,
+            alert_cooldown_minutes=15,
+            security_scan_interval=3600,
+            max_failed_attempts=10,
+            sql_injection_threshold=0.7,
+            forecast_horizon_days=30,
+            capacity_warning_threshold=0.8,
+            auto_scaling_enabled=False
+        )
+        
+        if output_path is None:
+            output_path = "idhe_config_sample.json"
+        
+        cls.save_config(sample_config, output_path)
+        logger.info(f"Sample configuration created at {output_path}")
+    
+    @classmethod
+    def validate_environment(cls) -> Dict[str, Any]:
+        """Validate environment setup and dependencies"""
+        validation_result = {
+            'valid': True,
+            'warnings': [],
+            'errors': [],
+            'recommendations': []
+        }
+        
+        # Check Python version
+        import sys
+        if sys.version_info < (3, 8):
+            validation_result['errors'].append("Python 3.8+ required")
+            validation_result['valid'] = False
+        elif sys.version_info < (3, 9):
+            validation_result['warnings'].append("Python 3.9+ recommended for better performance")
+        
+        # Check required packages
+        required_packages = [
+            'pandas', 'numpy', 'scikit-learn', 'scipy', 'psutil'
+        ]
+        
+        missing_packages = []
+        for package in required_packages:
+            try:
+                __import__(package.replace('-', '_'))
+            except ImportError:
+                missing_packages.append(package)
+        
+        if missing_packages:
+            validation_result['errors'].append(f"Missing required packages: {', '.join(missing_packages)}")
+            validation_result['valid'] = False
+        
+        # Check optional packages for advanced features
+        optional_packages = {
+            'tensorflow': 'ML optimization and neural networks',
+            'statsmodels': 'Advanced time series forecasting',
+            'dash': 'Web dashboard',
+            'prometheus_client': 'Metrics monitoring',
+            'redis': 'Real-time data caching'
+        }
+        
+        missing_optional = []
+        for package, description in optional_packages.items():
+            try:
+                __import__(package.replace('-', '_'))
+            except ImportError:
+                missing_optional.append(f"{package}: {description}")
+        
+        if missing_optional:
+            validation_result['recommendations'].extend(
+                f"Optional package {pkg} not found" for pkg in missing_optional
+            )
+        
+        # Check environment variables
+        important_env_vars = [
+            'IDHE_DATABASE_URL',
+            'IDHE_REDIS_URL'
+        ]
+        
+        missing_env = []
+        for env_var in important_env_vars:
+            if not os.getenv(env_var):
+                missing_env.append(env_var)
+        
+        if missing_env:
+            validation_result['recommendations'].append(
+                f"Consider setting environment variables: {', '.join(missing_env)}"
+            )
+        
+        # Check system resources
+        try:
+            import psutil
+            memory_gb = psutil.virtual_memory().total / (1024**3)
+            if memory_gb < 4:
+                validation_result['warnings'].append("Less than 4GB RAM available - performance may be limited")
+            elif memory_gb < 8:
+                validation_result['recommendations'].append("Consider upgrading to 8GB+ RAM for optimal performance")
+        except ImportError:
+            validation_result['recommendations'].append("psutil not available - system monitoring will be limited")
+        
+        return validation_result
